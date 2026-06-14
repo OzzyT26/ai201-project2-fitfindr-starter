@@ -83,6 +83,58 @@ If the function fails or if outfit is empty or missing, return a descriptive err
 
 **How does your agent decide which tool to call next?**
 <!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
+Global variables that the planning loop has access to:
+     TOOL_DEFINITIONS - a list of dictionaries that describes what each tool does and its parameters.
+     SYSTEM_PROMPT - a string to be provided to the LLM that describes its role and what it is meant to accomplish
+Before entering the planning loop:
+     System is given the prompt and the user's query:
+     {"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": query}
+     A new session is created by calling: session = _new_session(query, wardrobe)
+     We set session["query"] to the query that was given to run_agent() as a parameter.
+     We parse the query string for a description of the desired item, size, and max price of the item.
+     The extracted items are saved to a dictionary pointed to by session["parsed"]:
+          If a description was found, it is saved with the key "description".
+          If a size was found, it is saved with the key "size".
+          If a maximum price was found, the extracted value is saved with the key "max_value".  
+Planning Loop:
+     The planning loop runs a set number of times (indicated by the MAX_TOOL_ROUNDS variable in the configuration file) as a safeguard.
+     If the loop runs the number of times indicated by MAX_TOOL_ROUNDS, then we set session["error"] to the following message then return session:
+          ("I'm sorry, I couldn't finish answering that within the tool-call limit. "
+          "Please try asking again with a more detailed description of the item you're looking for.")
+     LLM is called and given the model, messages, TOOL_DEFINITIONS, and tool_choice is set to "auto".
+     The LLM selects tools to be called and provides arguments to provide to each tool.
+     The loop first gets the assistant_message located in: response.choices[0].message
+     And inside the assistant_message, we access tool_calls: assistant_message.tool_calls
+     If assistant_message.tool_calls is empty, then the LLM has reached its final answer, and we return assistant_message.content.
+     Otherwise, for each tool_call provided by the LLM in assistant_message.tool_calls:
+          We get the tool name from: tool_call.function.name
+          We get the tool args from: tool_call.function.arguments
+          We call the indicated tool with the indicated arguments
+          We check what the tool returns for error conditions:
+               search_listings(): Returns an empty list if nothing matches.
+               suggest_outfit(): If wardobe isn't empty, returns a non-empty string with outfit suggestions. If the wardrobe is empty, returns general styling advice for the item.
+               create_fit_card(): If outfit is empty or missing when called, returns a descriptive error message.
+          If search_listings() or create_fit_card() return their designated error (an empty list or an error message), we immediately return an appropriate error message to the user:
+               If search_listings() returns an empty list, we set session["error"] to the following message then return session:
+                    ("I'm sorry, I couldn't find any listings that match the item you described. Please try again.")
+               If create_fit_card() returns an error message, we set session["error"] to the following message then return session:
+                    ("I'm sorry, I couldn't find an outfit to go with the item. Please try again.")
+               suggest_outfit() should always return a usable outfit string. search_listings() must be called before suggest_outfit(). If search_listings() doesn't return a listing, the run_agent() function returns early, so suggest_outfit() isn't called. If wardrobe parameter is empty, suggest_outfit() asks the LLM for general styling advice for the item and returns this advice as a string. Either way, a useable recommendaiton string is returned.
+          After error checking, if we received valid output from the tool, we update the session information:
+               If search_listings() was called:
+                    The list of matching search results returned from search_listings() is saved to session["search_results"]
+                    The first item in the list returned by search_listings() is saved to session["selected_item"]
+               If suggest_outfit() was called:
+                    We save the return value into session["outfit_suggestion"]
+               If create_fit_card() was called:
+                    We save the return value into session["fit_card"]
+          Then we update messages: 
+               messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result, # content returned from the tool call 
+                })
+          We then return to the top of the loop.
 
 ---
 
@@ -90,6 +142,34 @@ If the function fails or if outfit is empty or missing, return a descriptive err
 
 **How does information from one tool get passed to the next?**
 <!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
+The agent stores the state within a dictionary called session. It accesses the current state by accessing the session dictionary.  Here is the structure of the dictionary and the data being tracked:
+     {
+        "query": query,              # original user query
+        "parsed": {},                # extracted description / size / max_price
+        "search_results": [],        # list of matching listing dicts
+        "selected_item": None,       # top result, passed into suggest_outfit
+        "wardrobe": wardrobe,        # user's wardrobe dict
+        "outfit_suggestion": None,   # string returned by suggest_outfit
+        "fit_card": None,            # string returned by create_fit_card
+        "error": None,               # set if the interaction ended early
+    }
+
+The results of each tool call are saved to the session dictonary:
+     "search_results": [],        # result list returned from search_listings()
+     "selected_item": None,       # first result in list returned from search_listings()
+     "outfit_suggestion": None,   # string returned by suggest_outfit()
+     "fit_card": None,            # string returned by create_fit_card()
+
+These are then be passed as input to other tool calls:
+     search_listings(description: str, size: str | None = None, max_price: float | None = None,)
+          At the beginning of the run_agent() loop, this information is parsed and saved to session["parsed"]. 
+          The parameters are then passed to search_listings() thusly: search_listings(parsed["description"], parsed["size"], parsed["max_price"])
+     suggest_outfit(new_item: dict, wardrobe: dict)
+          The parameters are passed to suggest_outfit thusly: suggest_outfit(session["selected_item"], session["wardrobe"])
+     create_fit_card(outfit: str, new_item: dict)
+          The parameters are passed to create_fit_card() thusly: create_fit_card(session["outfit_suggestion"], session["selected_item"])
+
+If any of the tool calls return an error, the error message is saved to session["error"] and session is returned immediately.
 
 ---
 
@@ -99,9 +179,9 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | |
-| suggest_outfit | Wardrobe is empty | |
-| create_fit_card | Outfit input is missing or incomplete | |
+| search_listings | No results match the query | Saves the error message returned from search_listings() to session["error"] and immediately returns the session dictionary.|
+| suggest_outfit | Wardrobe is empty | Asks LLM to provide general styling advice for the item rather than raising an exception or returning an empty string. Returns general styling advice.|
+| create_fit_card | Outfit input is missing or incomplete | Saves the error message returned from create_fit_card() to session["error"] and immediately returns the session dictionary.|
 
 ---
 
@@ -115,6 +195,60 @@ For each tool, describe the specific failure mode you're handling and what the a
      ASCII art, a Mermaid diagram (https://mermaid.js.org/syntax/flowchart.html), or an embedded
      sketch are all fine. You'll share this diagram with an AI tool when asking it to implement
      the planning loop and each individual tool. -->
+
+     User query
+    │
+    ▼
+Planning Loop ───────────────────────────────────────────────────────────────┐
+    │                                                                       │
+    ├─► Call LLM with messages + TOOL_DEFINITIONS + tool_choice="auto"      │
+    │       │                                                               │
+    │       │ assistant_message.tool_calls is empty                         │
+    │       ├──► Return assistant_message.content                           │
+    │       │                                                               │
+    │       │ assistant_message.tool_calls present                          │
+    │       ▼                                                               │
+    │   For each tool_call: extract tool name + arguments                   │
+    │       │                                                               │
+    ├─► search_listings(description, size, max_price)                       │
+    │       │ results=[]                                                    │
+    │       ├──► [ERROR] session["error"] = "No listings found..." → return │
+    │       │                                                               │
+    │       │ results=[item, ...]                                           │
+    │       ▼                                                               │
+    │   Session: search_results = results                                   │
+    │   Session: selected_item = results[0]                                 │
+    │       │                                                               │
+    ├─► suggest_outfit(selected_item, wardrobe)                             │
+    │       │ wardrobe empty                                                │
+    │       ├──► Return general styling advice                              │
+    │       │                                                               │
+    │       │ outfit_suggestion="..."                                       │
+    │       ▼                                                               │
+    │   Session: outfit_suggestion = "..."                                  │
+    │       │                                                               │
+    ├─► create_fit_card(outfit_suggestion, selected_item)                   │
+    │       │ error message returned                                        │
+    │       ├──► [ERROR] session["error"] = "Couldn't create fit card..."   │
+    │       │        → return session                                       │
+    │       │                                                               │
+    │       │ fit_card="..."                                                │
+    │       ▼                                                               │
+    │   Session: fit_card = "..."                                           │
+    │       │                                                               │
+    ├─► Append tool result to messages                                      │
+    │       messages.append({role: "tool", tool_call_id, content})          │
+    │       │                                                               │
+    │       └──► Repeat Planning Loop                                       │
+    │                                                                       │
+    └─► MAX_TOOL_ROUNDS reached                                             │
+            │                                                               │
+            ├──► [ERROR] session["error"] = "Tool-call limit reached..."    │
+            │        → return session                                       │
+            │                                                               │
+            └───────────────────────────────────────────────────────────────┘
+
+Return session
 
 ---
 
@@ -132,9 +266,10 @@ For each tool, describe the specific failure mode you're handling and what the a
      before trusting it" is a plan. -->
 
 **Milestone 3 — Individual tool implementations:**
+I ask ChatGPT to implement suggest_outfit(). I will give it the Tools, Planning Loop, Error Handling, and Architecture sections of planning.md. I will test it against a regular input, and also against an input where wardrobe is empty to make sure general recommendaitons are returned as specified by the spec.
 
 **Milestone 4 — Planning loop and state management:**
-
+I will ask ChatGPT to implement a draft of run_agent() and to implement to planning loop. I will give it the agent diagram, the Planning Loop, and the State Management sections of my spec. I will go over the draft to make sure it adheres to the spec. I will assure that it isn't calling all three tools unconditionally and that it is calling the tools according to the model's recommendations.
 ---
 
 ## A Complete Interaction (Step by Step)
