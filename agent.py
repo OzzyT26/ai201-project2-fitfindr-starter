@@ -134,7 +134,6 @@ def _dispatch_tool(tool_name: str, tool_args: dict, session: dict) -> dict:
     tool_args = tool_args or {}
 
     if tool_name == "search_listings":
-        print(f"search_listings running")
         result = search_listings(
             tool_args.get("description") or session["parsed"].get("description"),
             size=tool_args.get("size", session["parsed"].get("size")),
@@ -148,7 +147,6 @@ def _dispatch_tool(tool_name: str, tool_args: dict, session: dict) -> dict:
             return session
 
         session["selected_item"] = result[0]
-        print(f"session['selected_item'] = {session["selected_item"]}")
         return session
 
     if tool_name == "suggest_outfit":
@@ -159,14 +157,12 @@ def _dispatch_tool(tool_name: str, tool_args: dict, session: dict) -> dict:
                 "Please try searching for a different item."
             )
             return session
-        print(f"suggest_outfit running")
         result = suggest_outfit(
             session["selected_item"],
             session["wardrobe"],
         )
 
         session["outfit_suggestion"] = result
-        print(f"Item passed to suggest outfit: {session['selected_item']}\nsession['outfit_suggestion'] = {session['outfit_suggestion']}")
         return session
 
     if tool_name == "create_fit_card":
@@ -175,15 +171,12 @@ def _dispatch_tool(tool_name: str, tool_args: dict, session: dict) -> dict:
                 "Cannot create a fit card because the outfit or selected item is missing."
             )
             return session
-        print("create_fit_card running")
-        print(f"items passed to create_fit_card:\n{session['outfit_suggestion']}\n{session['selected_item']}")
         result = create_fit_card(
             session["outfit_suggestion"],
             session["selected_item"],
         )
 
         session["fit_card"] = result
-        print(f"session['fit_card']: {session["fit_card"]}")
         if "error:" in result.lower():
             session["error"] = result
 
