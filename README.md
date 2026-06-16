@@ -69,7 +69,7 @@ Before entering the planning loop:
           If a size was found, it is saved with the key "size".
           If a maximum price was found, the extracted value is saved with the key "max_value".  
 Planning Loop:
-     The planning loop runs a set number of times (indicated by the MAX_TOOL_ROUNDS variable in the configuration file) as a safeguard.
+     The planning loop runs a set number of times (indicated by the MAX_TOOL_ROUNDS variable) as a safeguard.
      If the loop runs the number of times indicated by MAX_TOOL_ROUNDS, then we set session["error"] to the following message then return session:
           ("I'm sorry, I couldn't finish answering that within the tool-call limit. "
           "Please try asking again with a more detailed description of the item you're looking for.")
@@ -81,7 +81,7 @@ Planning Loop:
      Otherwise, for each tool_call provided by the LLM in assistant_message.tool_calls:
           We get the tool name from: tool_call.function.name
           We get the tool args from: tool_call.function.arguments
-          We call the indicated tool with the indicated arguments
+          We call _dispatch_tool() with the indicated tool and arguments as input.  Inside _dispatch_tool():
           We check what the tool returns for error conditions:
                search_listings(): Returns an empty list if nothing matches.
                suggest_outfit(): If wardobe isn't empty, returns a non-empty string with outfit suggestions. If the wardrobe is empty, returns general styling advice for the item.
@@ -100,12 +100,14 @@ Planning Loop:
                     We save the return value into session["outfit_suggestion"]
                If create_fit_card() was called:
                     We save the return value into session["fit_card"]
-          Then we update messages: 
+          Back in run_agent() we update messages: 
                messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": tool_result, # content returned from the tool call 
                 })
+          We check for errors in session['error']. If an error has been returned from one of the tools, we return session early.
+          If we made it through all three tools and a fitcard was produced, we return the fitcard by returning session['fitcard'].
           We then return to the top of the loop.
 
 # State Management Approach
@@ -164,17 +166,23 @@ create_fit_card error example:
     
 # Spec Reflection
 **One way the spec helped you during implementation:**
+I think some of the details changed, for example, adding a _dispatch_tool() function, but the program follows the overall flow that was indicated in the spec. Walking through an example step by step helped me to think about how state would be passed throughout the planning loop. Walking through the planning loop in the spec also helped me focus on getting the LLM model to select the tools to be called rather than hardcoding the order of the tools. 
 **One way your implementation diverged from the spec, and why:**
+In the first version of my spec, I had indicated that I would use a configuration file to hold variables like MAX_TOOL_ROUNDS and LLM_MODEL. However, once I started writing an editing, I realized that there wasn't enough repetition of those variables to necessitate using a config file. So I decided to use global variables instead. Also, once I had run_agent() set up in a way where the LLM was deciding which tools to call, I found that it frequently called tools in the wrong order, causing errors to be returned to the user. To discourage this, I added a suggested order for tools to be called in the prompt.  
 
 # AI Usage
 **Instance 1**
 - *What I gave the AI:*
 I asked ChatGPT to implement suggest_outfit(). I will give it the Tools, Planning Loop, Error Handling, and Architecture sections of planning.md.
 - *What it produced:*
+     It fully implemented suggest_outfit() and it was a very good first draft. Its implementation creates a string summary of the item thrifted item and the wardrobe to be given to the LLM in a prompt. It then calls chat.completions.create() to get the outfit suggestion.
 - *What I changed or overrode:*
+     The version that ChatGPT wrote calls _get_groq_client() inside the function and performs all of the set up of the LLM, but this would be very inefficient, because it would have to do it each time the function is called, and each of the tools would need to do it as well. Instead, I saved _get_groq_client() and the LLM model to global variables so that the same model can be reused accross different tools. 
 
 **Instance 2**
 - *What I gave the AI:*
 I had Chatgpt implement a draft of run_agent() and to implement to planning loop. I will give it the agent diagram, the Planning Loop, and the State Management sections of my spec. 
 - *What it produced:*
+It produced a version of run_agent() that explicitly calls each of the tools in order rather than leaving the decision to the LLM. It also created the helper function _parse_query().
 - *What I changed or overrode:*
+I fully overrode the function and rewrote it so that the LLM decides which tool to call. However, this led to the LLM, at times, calling the wrong tool at the wrong time. To discourage this behavior, I added a recommended order for the tool calls in the prompt. 
