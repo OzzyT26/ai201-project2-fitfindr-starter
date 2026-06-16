@@ -18,7 +18,63 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+import json
+import re
+from tools import _get_groq_client, search_listings, suggest_outfit, create_fit_card
+
+# Global variables
+_CLIENT = _get_groq_client()
+LLM_MODEL = "llama-3.3-70b-versatile"
+MAX_TOOL_ROUNDS = 5
+TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_listings",
+            "description": "Search secondhand listings by description, optional size, and optional max price.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "size": {"type": ["string", "null"]},
+                    "max_price": {"type": ["number", "null"]},
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "suggest_outfit",
+            "description": "Suggest an outfit using the selected item and the user's wardrobe.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_fit_card",
+            "description": "Create a short social-media-style fit card from the outfit and selected item.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
+
+SYSTEM_PROMPT = """
+You are Fitfindr, a friendly secondhand fashion advisor who helps users find secondhand pieces and figure out how to wear them.
+Help users find clothing pieces by looking up pieces that match the user's specifications.
+Then create outfit suggestions using the selected clothing piece and short, shareable outfit captions for the thrifted find.
+Be sure to only use the provided tools, not your general knowledge.
+Tools must be called in this order: search_listings, suggest_outfit, create_fit_card"""
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -44,6 +100,94 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "error": None,               # set if the interaction ended early
     }
 
+# ── parsing helper ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    parsed = {
+        "description": query,
+        "size": None,
+        "max_price": None,
+    }
+
+    # Find max price: "under $30", "$30", "under 30"
+    price_match = re.search(r"(?:under|below|less than)?\s*\$?(\d+(?:\.\d+)?)", query.lower())
+    if price_match:
+        parsed["max_price"] = float(price_match.group(1))
+
+    # Find size: "size M", "size XXS", etc.
+    size_match = re.search(r"\bsize\s+([a-zA-Z0-9/]+)\b", query, re.IGNORECASE)
+    if size_match:
+        parsed["size"] = size_match.group(1)
+
+    # Clean description by removing price and size phrases
+    description = query
+    description = re.sub(r"(?:under|below|less than)?\s*\$?\d+(?:\.\d+)?", "", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bsize\s+[a-zA-Z0-9/]+\b", "", description, flags=re.IGNORECASE)
+    description = description.replace(",", " ").strip()
+
+    parsed["description"] = description
+
+    return parsed
+
+# ── tool dispatcher ─────────────────────────────────────────────────────────────
+def _dispatch_tool(tool_name: str, tool_args: dict, session: dict) -> dict:
+    tool_args = tool_args or {}
+
+    if tool_name == "search_listings":
+        print(f"search_listings running")
+        result = search_listings(
+            tool_args.get("description") or session["parsed"].get("description"),
+            size=tool_args.get("size", session["parsed"].get("size")),
+            max_price=tool_args.get("max_price", session["parsed"].get("max_price")),
+        )
+
+        session["search_results"] = result
+
+        if not result:
+            session["error"] = "I couldn't find any matching listings for the item you described. Please try a different item."  # []
+            return session
+
+        session["selected_item"] = result[0]
+        print(f"session['selected_item'] = {session["selected_item"]}")
+        return session
+
+    if tool_name == "suggest_outfit":
+        if session["selected_item"] is None:
+            session["error"] = (
+                "Cannot suggest an outfit because no listing was selected. "
+                "search_listings must return at least one item first."
+                "Please try searching for a different item."
+            )
+            return session
+        print(f"suggest_outfit running")
+        result = suggest_outfit(
+            session["selected_item"],
+            session["wardrobe"],
+        )
+
+        session["outfit_suggestion"] = result
+        print(f"Item passed to suggest outfit: {session['selected_item']}\nsession['outfit_suggestion'] = {session['outfit_suggestion']}")
+        return session
+
+    if tool_name == "create_fit_card":
+        if not session["outfit_suggestion"] or session["selected_item"] is None:
+            session["error"] = (
+                "Cannot create a fit card because the outfit or selected item is missing."
+            )
+            return session
+        print("create_fit_card running")
+        print(f"items passed to create_fit_card:\n{session['outfit_suggestion']}\n{session['selected_item']}")
+        result = create_fit_card(
+            session["outfit_suggestion"],
+            session["selected_item"],
+        )
+
+        session["fit_card"] = result
+        print(f"session['fit_card']: {session["fit_card"]}")
+        if "error:" in result.lower():
+            session["error"] = result
+
+        return session
 
 # ── planning loop ─────────────────────────────────────────────────────────────
 
@@ -92,9 +236,59 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+    session["parsed"] = _parse_query(query)
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"User query: {query}\n\n"
+                f"Parsed search parameters: {json.dumps(session['parsed'])}\n\n"
+                "Use the tools to complete the FitFindr workflow."
+            ),
+        },
+    ]
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        response = _CLIENT.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            tools=TOOL_DEFINITIONS,
+            tool_choice="auto",
+        )
+
+        assistant_message = response.choices[0].message
+
+        # When no more tools are called, session is complete
+        if not assistant_message.tool_calls:
+            return session
+
+        messages.append(assistant_message)
+
+        for tool_call in assistant_message.tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments or "{}")
+
+            tool_result = _dispatch_tool(tool_name, tool_args, session)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(tool_result),
+            })
+
+            if session["error"]:
+                return session
+
+            if session["fit_card"]:
+                return session
+
+    session["error"] = (
+        "I'm sorry, I couldn't finish answering that within the tool-call limit. "
+        "Please try asking again with a more detailed description of the item you're looking for."
+    )
     return session
 
 

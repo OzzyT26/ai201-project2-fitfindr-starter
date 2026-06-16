@@ -15,7 +15,7 @@ You must have at least 3 tools. The three required tools are listed — add any 
 ### Tool 1: search_listings
 
 **What it does:**
-Searches the listings locate din data/listings.json and returns items that match the description, size, and max_price given to the function as inputs. Returns an empty list if nothing matches — does NOT raise an exception.
+Searches the listings located in data/listings.json and returns items that match the description, size, and max_price given to the function as inputs. Returns an empty list if nothing matches — does NOT raise an exception.
 
 **Input parameters:**
 - `description` (str): Keywords describing what the user is looking for (e.g., "vintage graphic tee").
@@ -266,7 +266,7 @@ Return session
      before trusting it" is a plan. -->
 
 **Milestone 3 — Individual tool implementations:**
-I ask ChatGPT to implement suggest_outfit(). I will give it the Tools, Planning Loop, Error Handling, and Architecture sections of planning.md. I will test it against a regular input, and also against an input where wardrobe is empty to make sure general recommendaitons are returned as specified by the spec.
+I will ask ChatGPT to implement suggest_outfit(). I will give it the Tools, Planning Loop, Error Handling, and Architecture sections of planning.md. I will test it against a regular input, and also against an input where wardrobe is empty to make sure general recommendaitons are returned as specified by the spec.
 
 **Milestone 4 — Planning loop and state management:**
 I will ask ChatGPT to implement a draft of run_agent() and to implement to planning loop. I will give it the agent diagram, the Planning Loop, and the State Management sections of my spec. I will go over the draft to make sure it adheres to the spec. I will assure that it isn't calling all three tools unconditionally and that it is calling the tools according to the model's recommendations.

@@ -255,7 +255,7 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
     if not outfit or not outfit.strip():
         return (
             "Error: I couldn't create a fit card because the outfit suggestion was empty. "
-            "Please generate an outfit first."
+            "Please create an outfit first."
         )
 
     item_title = new_item.get("title", "this thrifted piece")
